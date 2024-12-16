@@ -1,0 +1,165 @@
+#!/bin/bash
+
+# Clear screen at the start
+clear
+
+# Welcome message
+echo "=== Bluetooth Configuration Script ==="
+echo "This script will clean up and configure Bluetooth tethering."
+echo
+read -p "Enter your phone's Bluetooth MAC Address (format: XX:XX:XX:XX:XX:XX): " MAC_ADDRESS
+
+# Step 1: Remove all traces of the MAC from bluetoothctl
+echo
+echo "Cleaning up Bluetooth configurations for MAC: $MAC_ADDRESS..."
+sudo systemctl restart bluetooth.service
+sleep 1
+
+sudo bluetoothctl <<EOF
+remove $MAC_ADDRESS
+untrust $MAC_ADDRESS
+disconnect $MAC_ADDRESS
+exit
+EOF
+
+echo
+echo "Bluetooth device $MAC_ADDRESS removed from bluetoothctl."
+
+# Step 2: Prompt to remove Pwnagotchi
+echo
+echo "Before proceeding, REMOVE the Pwnagotchi Bluetooth tethering from your phone!"
+read -p "Press Enter when ready to continue..."
+
+# Step 3: Ask if the device is Android or Apple
+echo
+echo "Is your phone Android or Apple?"
+select PHONE_TYPE in "Android" "Apple"; do
+    case $PHONE_TYPE in
+        Android)
+            echo "Checking Pwnagotchi configuration for Android..."
+            # Check for the MAC address
+            if grep -q 'main.plugins.bt-tether.devices.android-phone.mac = ""' /etc/pwnagotchi/config.toml; then
+                echo "No MAC address found for Android!"
+                echo "Consider adding your phone's MAC address in /etc/pwnagotchi/config.toml:"
+                echo "Example: main.plugins.bt-tether.devices.android-phone.mac = \"$MAC_ADDRESS\""
+            else
+                echo "Android MAC address already configured."
+            fi
+
+            # Check if bt-tether is enabled
+            if grep -q 'main.plugins.bt-tether.enabled = true' /etc/pwnagotchi/config.toml; then
+                echo
+                echo "WARNING: Bluetooth tethering is currently ENABLED in Pwnagotchi."
+                read -p "Consider disabling it to prevent conflicts. Press Enter to continue..." 
+            fi
+            break
+            ;;
+        Apple)
+            echo "Checking Pwnagotchi configuration for Apple..."
+            # Check for the MAC address
+            if grep -q 'main.plugins.bt-tether.devices.ios-phone.mac = ""' /etc/pwnagotchi/config.toml; then
+                echo "No MAC address found for Apple!"
+                echo "Consider adding your phone's MAC address in /etc/pwnagotchi/config.toml:"
+                echo "Example: main.plugins.bt-tether.devices.ios-phone.mac = \"$MAC_ADDRESS\""
+            else
+                echo "Apple MAC address already configured."
+            fi
+
+            # Check if bt-tether for iOS is enabled
+            if grep -q 'main.plugins.bt-tether.devices.ios-phone.enabled = true' /etc/pwnagotchi/config.toml; then
+                echo
+                echo "WARNING: Bluetooth tethering for iOS is currently ENABLED in Pwnagotchi."
+                read -p "Consider disabling it to prevent conflicts. Press Enter to continue..." 
+            fi
+            break
+            ;;
+        *)
+            echo "Invalid option. Please choose Android or Apple."
+            ;;
+    esac
+done
+
+# Step 4: Configure NetworkManager for Loopback
+echo
+echo "Configuring loopback network..."
+sudo bash -c 'cat > /etc/NetworkManager/system-connections/loopback.nmconnection <<EOL
+[connection]
+id=loopback
+type=loopback
+
+[loopback]
+
+[ipv4]
+method=auto
+
+[ipv6]
+addr-gen-mode=default
+method=auto
+
+[proxy]
+EOL'
+
+echo "Loopback configuration added."
+
+# Step 5: Configure NetworkManager for Bluetooth tethering
+echo
+echo "Configuring Bluetooth tethering..."
+sudo bash -c "cat > /etc/NetworkManager/system-connections/bluetooth.nmconnection <<EOL
+[connection]
+id=bluetooth
+uuid=$(uuidgen)
+type=bluetooth
+
+[bluetooth]
+bdaddr=$MAC_ADDRESS
+type=panu
+
+[ipv4]
+address1=192.168.44.44/24,192.168.44.1
+dns=8.8.8.8;1.1.1.1;
+method=auto
+route1=192.168.44.0/24,192.168.44.1
+
+[ipv6]
+addr-gen-mode=default
+method=auto
+
+[proxy]
+EOL"
+
+echo "Bluetooth configuration file created."
+
+# Step 6: Add udev rules for NetworkManager management
+echo
+echo "Adding udev rules for loopback and Bluetooth management..."
+sudo bash -c 'cat > /etc/udev/rules.d/85-nm-unmanaged.rules <<EOL
+ENV{DEVTYPE}=="gadget", ENV{NM_UNMANAGED}="0"
+ENV{DEVTYPE}=="bluetooth", ENV{NM_UNMANAGED}="0"
+ENV{DEVTYPE}=="loopback", ENV{NM_UNMANAGED}="0"
+LABEL="nm_unmanaged_end"
+EOL'
+
+echo "udev rules updated."
+
+# Step 7: Restart services
+echo
+echo "Restarting Bluetooth and NetworkManager services..."
+sudo systemctl restart bluetooth.service
+sudo systemctl restart NetworkManager.service
+
+# Step 8: Pair and trust the device
+echo
+echo "Pairing and trusting the device with MAC: $MAC_ADDRESS..."
+sudo bluetoothctl <<EOF
+pair $MAC_ADDRESS
+trust $MAC_ADDRESS
+exit
+EOF
+
+echo "Device $MAC_ADDRESS paired and trusted."
+
+# Final step: Reboot
+echo
+echo "Configuration complete. Rebooting to apply all changes."
+read -p "Press Enter to reboot your Raspberry Pi..."
+sudo reboot
